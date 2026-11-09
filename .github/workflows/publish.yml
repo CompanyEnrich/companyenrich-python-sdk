@@ -1,0 +1,140 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'CompanyEnrich/companyenrich-python-sdk' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: '3.12'
+          enable-cache: false
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Check that the sync client is current
+        run: uv run --frozen python scripts/unasync.py --check
+
+      - name: Type-check
+        run: uv run --frozen mypy
+
+      - name: Test
+        run: uv run --frozen pytest
+
+      - name: Build the package
+        run: uv build
+
+      - name: Smoke-test the built wheel
+        run: |
+          uv run --isolated --no-project --with dist/*.whl python -c "
+          import companyenrich, companyenrich.types
+          companyenrich.CompanyEnrich('smoke').close()
+          print(companyenrich.__version__)
+          "
+
+      - name: Check whether this version needs publishing
+        id: release
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import tomllib
+          import urllib.error
+          import urllib.request
+
+          with open('pyproject.toml', 'rb') as file:
+              project = tomllib.load(file)['project']
+          name, version = project['name'], project['version']
+          stable = re.compile(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)')
+          if name != 'companyenrich' or not stable.fullmatch(version):
+              raise SystemExit('This workflow publishes stable companyenrich versions only.')
+
+
+          def fetch(path):
+              url = f'https://pypi.org/pypi/{name}{path}/json'
+              request = urllib.request.Request(url, headers={'Cache-Control': 'no-cache'})
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  # A 404 means this version, or the whole project, does not exist yet.
+                  if error.code == 404:
+                      return None
+                  raise SystemExit(f'Cannot check PyPI releases: HTTP {error.code}.')
+
+
+          exists = fetch(f'/{version}') is not None
+          project_data = fetch('')
+          latest = project_data['info']['version'] if project_data else None
+          if not exists and latest:
+              if not stable.fullmatch(latest):
+                  raise SystemExit(f"Cannot compare latest version {latest}. Check PyPI's releases.")
+              parts = lambda value: tuple(int(part) for part in value.split('.'))
+              if parts(version) <= parts(latest):
+                  raise SystemExit(f"Version {version} must be newer than PyPI's latest {latest}.")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'publish={str(not exists).lower()}\n')
+          message = (
+              f'{name} {version} is already published. Checks passed; publishing skipped.'
+              if exists
+              else f'{name} {version} is ready to publish.'
+          )
+          print(message)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'{message}\n')
+          PY
+
+      - name: Store the built package
+        if: steps.release.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/companyenrich/
+    permissions:
+      id-token: write # Authenticates to PyPI through trusted publishing, with no stored token.
+    steps:
+      - name: Download the built package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          # PyPI's version lookup can lag behind a release made moments earlier.
+          skip-existing: true

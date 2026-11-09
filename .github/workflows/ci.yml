@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: '3.12'
+          enable-cache: false
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Check that generated code is current
+        run: |
+          uv run --frozen python scripts/generate_types.py
+          git diff --exit-code src/companyenrich/_generated.py
+          uv run --frozen python scripts/unasync.py --check
+
+      - name: Lint
+        run: |
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
+
+      - name: Type-check
+        run: uv run --frozen mypy
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: false
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Test
+        run: uv run --frozen pytest
+
+  oldest-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: '3.10'
+          enable-cache: false
+
+      - name: Test against the oldest supported httpx
+        run: |
+          uv venv oldest-httpx
+          uv pip install --python oldest-httpx . 'httpx==0.25.0' 'pytest>=9' 'pytest-asyncio>=1'
+          oldest-httpx/bin/python -m pytest
+
+      # Current test tools need a newer typing-extensions, so this floor gets an import check.
+      - name: Import with the oldest supported typing-extensions
+        run: |
+          uv venv oldest-typing
+          uv pip install --python oldest-typing . 'typing-extensions==4.10.0'
+          oldest-typing/bin/python -c 'import companyenrich, companyenrich.types'
