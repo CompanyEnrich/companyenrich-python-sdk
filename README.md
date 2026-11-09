@@ -50,12 +50,6 @@ page = client.companies.search(
 )
 print(len(page["items"]), page.get("nextCursor"))
 
-# Natural-language search
-client.companies.search(semantic={"query": "AI tools for hospitals"})
-
-# Lookalike search
-client.companies.search(lookalike={"domains": ["stripe.com", "adyen.com"]})
-
 # Free count of the same query
 total = client.companies.count(filter={"country": "US"})
 print(total["count"])
@@ -74,6 +68,102 @@ person = client.people.enrich("jane@stripe.com")
 lookup = client.people.find_email(person["id"], domain="stripe.com")
 if lookup["status"] == "found":
     print(lookup.get("email"), lookup.get("certainty"))
+```
+
+## Semantic and lookalike search
+
+Semantic search finds companies or people from a plain-language description. Lookalike search finds companies similar to ones you already know. A company search can use either mode but not both, and either can be combined with `filter`. `search_all` accepts the same arguments as `search`.
+
+| Search | Credits per result |
+| --- | --- |
+| Companies by filters | 1 |
+| Companies by description | 2 |
+| Lookalike companies | 5 |
+| People, in any mode | 2 |
+
+Paid expansions cost extra, and an empty result costs one result's base price. To try a query for free, pass the same arguments to `companies.preview()` or `people.preview()`, which need a plan with previews.
+
+### Companies by description
+
+By default, the API reads attributes such as location and size from your query and applies them. `interpretation` shows what it inferred.
+
+```python
+results = client.companies.search(
+    semantic={"query": "saas companies in Turkey"},
+    page_size=25,
+)
+
+for company in results["items"]:
+    print(company["domain"], company.get("description"))
+
+interpretation = results.get("interpretation")
+if interpretation:
+    print(interpretation.get("filter"))  # Inferred filters, such as the country
+    print(interpretation.get("boost"))  # Inferred ranking boosts, such as the category
+```
+
+Filters you pass take priority over inferred values of the same kind. Set `"autoFilter": False` to turn inference off, or set `weight` (0 to 1) to control how much semantic similarity affects ranking.
+
+```python
+filtered = client.companies.search(
+    semantic={"query": "AI tools for hospitals", "autoFilter": False},
+    filter={"country": "US", "employees": ["51-200", "201-500"]},
+    page_size=25,
+)
+```
+
+### Lookalike companies
+
+Pass 1 to 10 seed domains. Use `"minScore"` (0 to 1) to require a minimum similarity.
+
+```python
+similar = client.companies.search(
+    lookalike={"domains": ["stripe.com", "adyen.com"]},
+    filter={"country": "US", "employees": ["51-200", "201-500"]},
+    page_size=25,
+)
+
+scores = similar.get("scores") or {}  # Scores are not probabilities
+for company in similar["items"]:
+    print(company["domain"], scores.get(company["id"]))
+```
+
+Keep results in the order returned rather than sorting them by score.
+
+### People by description
+
+The API turns your query into person filters, such as role, seniority and country, plus a description of their current companies. `interpretation` shows both. A query it can't infer any filters from is rejected with an error, so include something concrete like a role or location.
+
+```python
+people = client.people.search(
+    semantic={"query": "marketing leaders at Series B fintech startups in London"},
+    page_size=25,
+)
+
+for person in people["items"]:
+    print(person.get("name"), person.get("position"))
+
+print(people.get("interpretation"))  # The inferred filters and company description
+```
+
+### People at matching companies
+
+Use `company` to find people by the kind of company they work at. These searches cover people at the 1,000 best-matching companies.
+
+```python
+# Executives at companies matching a description
+executives = client.people.search(
+    filter={"seniority": ["c-suite", "vp"]},
+    company={"semantic": {"query": "AI tools for hospitals"}},
+    page_size=25,
+)
+
+# Executives at companies similar to your best customers
+similar_teams = client.people.search(
+    filter={"seniority": ["c-suite", "vp"]},
+    company={"lookalike": {"domains": ["stripe.com", "adyen.com"]}},
+    page_size=25,
+)
 ```
 
 ## Pagination

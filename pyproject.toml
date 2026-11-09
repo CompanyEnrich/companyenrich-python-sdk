@@ -1,6 +1,6 @@
 [project]
 name = "companyenrich"
-version = "1.0.0"
+version = "1.0.1"
 description = "Official Python SDK for the CompanyEnrich API: company and people enrichment, search, lookalikes, and work emails."
 readme = "README.md"
 license = "MIT"
